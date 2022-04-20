@@ -26,13 +26,14 @@ use sp_version::RuntimeVersion;
 // A few exports that help ease life for downstream crates.
 pub use frame_support::{
 	construct_runtime, parameter_types,
-	traits::{ConstU128, ConstU32, ConstU8, KeyOwnerProofSystem, Randomness, StorageInfo},
+	traits::{ConstU128, ConstU32, ConstU8, ConstBool, KeyOwnerProofSystem, Randomness, StorageInfo, EnsureOneOf, EqualPrivilegeOnly},
 	weights::{
 		constants::{BlockExecutionWeight, ExtrinsicBaseWeight, RocksDbWeight, WEIGHT_PER_SECOND},
 		IdentityFee, Weight,
 	},
 	StorageValue,
 };
+pub use frame_system::{EnsureRoot};
 pub use pallet_balances::Call as BalancesCall;
 pub use pallet_timestamp::Call as TimestampCall;
 use pallet_transaction_payment::CurrencyAdapter;
@@ -61,6 +62,10 @@ pub type Index = u32;
 
 /// A hash of some data used by the chain.
 pub type Hash = sp_core::H256;
+
+/// Constant values used within the runtime.
+pub const MILLIASTR: Balance = 1_000_000_000_000_000;
+pub const ASTR: Balance = 1_000 * MILLIASTR;
 
 /// Opaque types. These are used by the CLI to instantiate machinery that don't need to know
 /// the specifics of the runtime. They can then be made to be agnostic over specific formats
@@ -249,6 +254,111 @@ impl pallet_balances::Config for Runtime {
 	type WeightInfo = pallet_balances::weights::SubstrateWeight<Runtime>;
 }
 
+// Schedular
+parameter_types! {
+	pub MaximumSchedulerWeight: Weight = NORMAL_DISPATCH_RATIO * BlockWeights::get().max_block;
+}
+
+impl pallet_scheduler::Config for Runtime {
+	type Event = Event;
+	type Origin = Origin;
+	type PalletsOrigin = OriginCaller;
+	type Call = Call;
+	type MaximumWeight = MaximumSchedulerWeight;
+	type ScheduleOrigin = EnsureRoot<AccountId>;
+	type MaxScheduledPerBlock = ConstU32<50>;
+	type WeightInfo = pallet_scheduler::weights::SubstrateWeight<Runtime>;
+	type OriginPrivilegeCmp = EqualPrivilegeOnly;
+	type PreimageProvider = ();
+	type NoPreimagePostponement = ();
+}
+
+// Where Instance1 and Instance2 come from?
+type CouncilInstance = pallet_collective::Instance1;
+type TechCommitteeInstance = pallet_collective::Instance2;
+
+impl pallet_collective::Config<CouncilInstance> for Runtime {
+	type Origin = Origin;
+	type Event = Event;
+	type Proposal = Call;
+	/// The maximum amount of time (in blocks) for council members to vote on motions.
+	/// Motions may end in fewer blocks if enough votes are cast to determine the result.
+	type MotionDuration = ConstU32<{ 3 * DAYS }>;
+	/// The maximum number of Proposlas that can be open in the council at once.
+	type MaxProposals = ConstU32<100>;
+	/// The maximum number of council members.
+	type MaxMembers = ConstU32<100>;
+	type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
+	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_collective::Config<TechCommitteeInstance> for Runtime {
+	type Origin = Origin;
+	type Event = Event;
+	type Proposal = Call;
+	/// The maximum amount of time (in blocks) for council members to vote on motions.
+	/// Motions may end in fewer blocks if enough votes are cast to determine the result.
+	type MotionDuration = ConstU32<{ 3 * DAYS }>;
+	/// The maximum number of Proposlas that can be open in the council at once.
+	type MaxProposals = ConstU32<100>;
+	/// The maximum number of council members.
+	type MaxMembers = ConstU32<100>;
+	type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
+	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_democracy::Config for Runtime {
+	type Proposal = Call;
+	type Event = Event;
+	type Currency = Balances;
+	type EnactmentPeriod = ConstU32<{ 1 * DAYS }>;
+	type LaunchPeriod = ConstU32<{ 1 * DAYS }>;
+	type VotingPeriod = ConstU32<{ 5 * DAYS }>;
+
+	type VoteLockingPeriod = ConstU32<{ 1 * DAYS }>;
+	type FastTrackVotingPeriod = ConstU32<{ 3 * HOURS }>;
+	type MinimumDeposit = ConstU128<{ 4 * ASTR }>;
+	/// To decide what their next motion is.
+	type ExternalOrigin =
+		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 1, 2>;
+	/// To have the next scheduled referendum be a straight majority-carries vote.
+	type ExternalMajorityOrigin =
+		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>;
+	/// To have the next scheduled referendum be a straight default-carries (NTB) vote.
+	type ExternalDefaultOrigin =
+		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>;
+	/// To allow a shorter voting/enactment period for external proposals.
+	type FastTrackOrigin =
+		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 1, 2>;
+	/// To instant fast track.
+	type InstantOrigin =
+		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 3, 5>;
+	// To cancel a proposal which has been passed.
+	type CancellationOrigin = EnsureOneOf<
+		EnsureRoot<AccountId>,
+		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>,
+	>;
+	// To cancel a proposal before it has been passed.
+	type CancelProposalOrigin = EnsureOneOf<
+		EnsureRoot<AccountId>,
+		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 3, 5>,
+	>;
+	type BlacklistOrigin = EnsureRoot<AccountId>;
+	// Any single technical committee member may veto a coming council proposal, however they can
+	// only do it once and it lasts only for the cooloff period.
+	type VetoOrigin = pallet_collective::EnsureMember<AccountId, TechCommitteeInstance>;
+	type CooloffPeriod = ConstU32<{ 7 * DAYS }>;
+	type PreimageByteDeposit = ConstU128<{ 100 * MILLIASTR }>;
+	type Slash = ();
+	type InstantAllowed = ConstBool<true>;
+	type Scheduler = Scheduler;
+	type MaxVotes = ConstU32<100>;
+	type OperationalPreimageOrigin = pallet_collective::EnsureMember<AccountId, CouncilInstance>;
+	type PalletsOrigin = OriginCaller;
+	type WeightInfo = pallet_democracy::weights::SubstrateWeight<Runtime>;
+	type MaxProposals = ConstU32<100>;
+}
+
 parameter_types! {
 	pub const TransactionByteFee: Balance = 1;
 }
@@ -288,6 +398,15 @@ construct_runtime!(
 		Sudo: pallet_sudo,
 		// Include the custom logic from the pallet-template in the runtime.
 		TemplateModule: pallet_template,
+
+		// Governance stuff.
+		Scheduler: pallet_scheduler,
+		Democracy: pallet_democracy,
+
+		CouncilCollective:
+			pallet_collective::<Instance1>::{Pallet, Call, Storage, Event<T>, Origin<T>, Config<T>},
+		TechCommitteeCollective:
+			pallet_collective::<Instance2>::{Pallet, Call, Storage, Event<T>, Origin<T>, Config<T>},
 	}
 );
 
